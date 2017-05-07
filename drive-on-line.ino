@@ -1,3 +1,13 @@
+// Подключаем библиотеки таймера
+#include <Event.h>
+#include <Timer.h>
+
+// Подключаем библиотеки управления по bluetooth RemoteXY
+// http://remotexy.com
+#define REMOTEXY_MODE__SOFTSERIAL
+#include <SoftwareSerial.h>
+#include <RemoteXY.h>
+
 // Подключаем библиотеку для работы с I2C
 #include <Wire.h>
 
@@ -6,6 +16,10 @@
 
 // Подключаем библиотеку драйвера моторов Adafruit
 #include "utility/Adafruit_MS_PWMServoDriver.h"
+
+// Подключаем нестандартную библиотеку работы с сервоприводами с переменной скоростью
+// http://forum.arduino.cc/index.php?topic=61586.0
+#include <VarSpeedServo.h>
 
 // Подключаем библиотеку для работы с 4-значным экраном
 #include "TM1637.h"
@@ -28,6 +42,30 @@ Adafruit_DCMotor *RightMotor = AFMS.getMotor(2);
 // Левый мотор подключен к выходу 1
 Adafruit_DCMotor *LeftMotor = AFMS.getMotor(1);
 
+/////////////////////////////////////////////BLUETOOTH//////////////////////////////////////////////////////
+// настройки соединения 
+#define REMOTEXY_SERIAL_RX 2
+#define REMOTEXY_SERIAL_TX 3
+#define REMOTEXY_SERIAL_SPEED 9600
+
+// конфигурация интерфейса Android
+#pragma pack(push, 1)
+uint8_t RemoteXY_CONF[] =
+  { 255,3,0,0,0,35,0,6,0,0,
+  2,0,33,11,37,19,2,79,78,0,
+  79,70,70,0,1,1,33,36,18,17,
+  2,60,0,1,1,54,36,17,17,2,
+  62,0 };
+
+// структура определяет все переменные интерфейса управления 
+struct {
+  uint8_t switch_run; // =1 если переключатель включен и =0 если отключен 
+  uint8_t button_left; // =1 если кнопка нажата, иначе =0 
+  uint8_t button_right; // =1 если кнопка нажата, иначе =0 
+  uint8_t connect_flag;  // =1 if wire connected, else =0 
+} RemoteXY;
+#pragma pack(pop)
+
 
 //////////////////////////////////////////////ДАТЧИК ЛИНИИ//////////////////////////////////////////////////////
 // Левый датчик линии по направлению движения
@@ -41,11 +79,17 @@ int iCLS;
 int iRLS;
 int iLCR;
 
-// Объявляем переменную признака авторежима движения
-bool isAuto;
+// Объявляем переменную признака последнего движения (влево, вправо, прямо)
+bool isLast1Left;
+bool isLast1Right;
+bool isLast1Forward;
+bool isLast1Back;
 
-// Объявляем переменную признака движения по линии
-bool isLine;
+// Объявляем и устанавливаем переменные задержек при движении
+int iFDelay;
+int iRDelay;
+int iLDelay;
+int iUDelay;
 
 // Создаем переменную для команд Bluetooth
 char vcmd;
@@ -54,23 +98,37 @@ char vcmd;
 int iMaxSpeedRM = 55; //55
 int iMaxSpeedLM = 50; //50
 
+// Создаем объект таймера
+Timer t;
+
 void setup() {
   // Открываем последовательный порт
-  Serial.begin(9600);
+  //Serial.begin(9600);
+
+  t.every(1, readBTSignal);
+  t.every(10, doMoving);
+
+  // Инициализация управления Bluetooth-Android
+  RemoteXY_Init(); 
 
   // Создаем объект шилда мотор моторов на частоте по умолчанию 1.6KHz
   AFMS.begin();
 
-  // Устанавливаем переменную признака авторежима
-  isAuto = false;
+  // Объявляем переменную признака последнего движения (влево, вправо, прямо)
+  isLast1Left = false;
+  isLast1Right = false;
+  isLast1Forward = false;
+  isLast1Back = false;
 
-  // Устанавливаем переменную признака движения по линии
-  isLine = false;
+  // Объявляем и устанавливаем переменные задержек при движении
+  iFDelay = 150;
+  iRDelay = 100;
+  iLDelay = 100;
+  iUDelay = 50;
 
   //Устанавливаем яркость экрана и инициируем его
   Disp4d.set(5);
   Disp4d.init(D4056A);
-
 }
 
 
@@ -123,197 +181,161 @@ void moveS() {
   LeftMotor->run(RELEASE);
 }
 
+//////////////////////////////////////////////ПРЕДИДУЩЕЕ ДВИЖЕНИЕ//////////////////////////////////////////////////////
+void setLast1Right(){
+  isLast1Left = false;
+  isLast1Right = true;
+  isLast1Forward = false;
+  isLast1Back = false;
+}
+
+void setLast1Left(){
+  isLast1Left = true;
+  isLast1Right = false;
+  isLast1Forward = false;
+  isLast1Back = false;
+}
+
+void setLast1Forward(){
+  isLast1Left = false;
+  isLast1Right = false;
+  isLast1Forward = true;
+  isLast1Back = false;
+}
+
+void setLast1Back(){
+  isLast1Left = false;
+  isLast1Right = false;
+  isLast1Forward = false;
+  isLast1Back = true;
+}
+
 
 void loop() 
 {
-  if (Serial.available())
-  {
-    //Управление программой на Android: Bluetooth RC Controller
-    vcmd = (char)Serial.read();
-    //F – вперед
-    //B – назад
-    //L – влево
-    //R – вправо
-    //G – прямо и влево
-    //I – прямо и вправо
-    //H – назад и влево
-    //J – назад и вправо
-    //S – стоп 
-    //W – передняя фара включена
-    //w – передняя фара выключена
-    //U – задняя фара включена
-    //u – задняя фара выключена
-    //V – звуковой сигнал включен
-    //v – звуковой сигнал выключен
-    //X – сигнал “аварийка” включен
-    //x - сигнал “аварийка” выключен
-    //0 – скорость движения 0%
-    //1 – скорость движения 10%
-    //2 – скорость движения 20%
-    //3 – скорость движения 30%
-    //4 – скорость движения 40%
-    //5 – скорость движения 50%
-    //6 – скорость движения 60%
-    //7 – скорость движения 70%
-    //8 – скорость движения 80%
-    //9 – скорость движения 90%
-    //q – скорость движения 100% 
-    
-    // Включить автопилот
-    if (vcmd == 'X')
-    {
-      isAuto = true;
-      Disp4d.display(1);
-    }
-    // Выключить автопилот
-    if (vcmd == 'x')
-    {
-      isAuto = false;
-      Disp4d.display(-1);
-    }
+  t.update();
+}
 
-    // Включить движение по линии
-    if (vcmd == 'W')
-    {
-      isLine = true;
-      Disp4d.display(2);
-    }
-    // Выключить движение по линии
-    if (vcmd == 'w')
-    {
-      isLine = false;
-      Disp4d.display(-2);
-    }
+void readBTSignal() 
+{
+  RemoteXY_Handler();
+}
 
-    if (isLine)
+void doMoving() 
+{
+  Disp4d.display(RemoteXY.button_left*100 + RemoteXY.switch_run*10 + RemoteXY.button_right);
+  
+    if (RemoteXY.switch_run)
     {
       // 0 - датчик на линии, 1 - датчик вне линии
       iLLS = digitalRead(L_LINE_SENSOR_PIN);
       iCLS = digitalRead(C_LINE_SENSOR_PIN);
       iRLS = digitalRead(R_LINE_SENSOR_PIN);
-
-      Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
       
       //  Определяем действия в соответствии с текущим положением датчиков
       if (iLLS == 1 && iCLS == 1 && iRLS == 1)
       {
-        // 111 - Если все датчики находятся вне линии - двигаемся назад
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
+        // 111 - Если все датчики находятся вне линии - действуем на основе предидущего движения
         setMaxSpeed();
-        moveB();
-        delay(50);
+        if (isLast1Right)
+        {
+          // Если предидущее движение было направо - поворачиваем правее
+          moveR();
+          setLast1Right();
+        }
+        else if (isLast1Left)
+        {
+          // Если предидущее движение было налево - поворачиваем левее
+          moveL();
+          setLast1Left();
+        }
+        else if (isLast1Forward)
+        {
+          // Если предидущее движение было прямо - поворачиваем правее
+          moveR();
+          setLast1Right();
+        }
+        else
+        {
+          // Если предидущее движение было назад или не было определено - поворачиваем правее
+          moveR();
+          setLast1Right();
+        }
+        delay(iUDelay);
       }
       else if (iLLS == 1 && iCLS == 0 && iRLS == 1)
       {
         // 101 - Если только центральный датчик находится на линии - продолжаем движение прямо
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
         setMaxSpeed();
         moveF();
-        delay(150);
+        setLast1Forward();
+        delay(iFDelay);
       }
       else if (iLLS == 0 && iCLS == 1 && iRLS == 1)
       {
-        // 011 - Если только левый датчик находится на линии - поворачиваем влево
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
-        //setMaxSpeed();
-        //moveL();
+        // 011 - Если только левый датчик находится на линии - продолжаем движение прямо левее
         setMaxRSpeed();
+        setLast1Left();
         moveF();
-        delay(100);
+        delay(iLDelay);
       }
       else if (iLLS == 0 && iCLS == 0 && iRLS == 1)
       {
         // 001 - Если левый и центральный датчики находятся на линии - продолжаем движение прямо левее
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
         setMaxRSpeed();
         moveF();
-        delay(100);
+        setLast1Left();
+        delay(iLDelay);
       }
       else if (iLLS == 1 && iCLS == 1 && iRLS == 0)
       {
-        // 110 - Если только правый датчик находится на линии - поворачиваем вправо
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
-        //setMaxSpeed();
-        //moveR();
+        // 110 - Если только правый датчик находится на линии - продолжаем движение прямо правее
         setMaxLSpeed(); 
         moveF();
-        delay(100);
+        setLast1Right();
+        delay(iRDelay);
       }
       else if (iLLS == 1 && iCLS == 0 && iRLS == 0)
       {
         // 100 - Если правый и центральный датчики находятся на линии - продолжаем движение прямо правее
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
         setMaxLSpeed(); 
         moveF();
-        delay(100);
+        setLast1Right();
+        delay(iRDelay);
       }
       else
       {
-        // 000 - Если правый и левый датчики находятся на линии - двигаемся назад
-        Disp4d.display(iLLS*100 + iCLS*10 + iRLS);
-        //setMaxSpeed();
-        //moveR();
-        setMaxLSpeed(); 
-        moveF();
-        delay(50);  
+        // 000 010 - Если правый и левый датчики находятся на линии - действуем на основе предидущего движения
+        setMaxSpeed();
+        if (isLast1Right)
+        {
+          // Если предидущее движение было направо - поворачиваем правее
+          moveR();
+          setLast1Right();
+        }
+        else if (isLast1Left)
+        {
+          // Если предидущее движение было налево - поворачиваем левее
+          moveL();
+          setLast1Left();
+        }
+        else if (isLast1Forward)
+        {
+          // Если предидущее движение было прямо - поворачиваем правее
+          moveR();
+          setLast1Right();
+        }
+        else
+        {
+          // Если предидущее движение было назад или не было определено - назад
+          moveB();
+          setLast1Right();
+        }
+        delay(iUDelay);  
       }
-      goto EndOfMoving;
     }
-    
-    // Вперед
-    if (vcmd == 'F') 
-    {
-      setMaxSpeed();
-      moveF();
-    }
-    // Назад
-    if (vcmd == 'B')
-    {
-      setMaxSpeed();
-      moveB();
-    }
-    // Влево
-    if (vcmd == 'L')
-    {
-      setMaxSpeed();
-      moveL();
-    }    
-    // Вправо
-    if (vcmd == 'R')
-    {
-      setMaxSpeed();
-      moveR();
-    }
-    
-    // Вперед и влево
-    if (vcmd == 'G') 
-    {
-      setMaxRSpeed();
-      moveF();
-    }
-    // Вперед и вправо
-    if (vcmd == 'I')
-    {
-      setMaxLSpeed();
-      moveF();
-    }
-    // Назад и влево
-    if (vcmd == 'H')
-    {
-      setMaxRSpeed();
-      moveB();
-    }
-    // Назад и вправо
-    if (vcmd == 'J')
-    {
-      setMaxLSpeed();
-      moveB();
-    }
-    // Стоп
-    if (vcmd == 'S')
+    else
     {
       moveS();
     }
-    EndOfMoving:;
-  } //if
-} //loop
+}
