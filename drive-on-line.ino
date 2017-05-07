@@ -1,3 +1,10 @@
+/**************************************************************
+drive-on-line.ino
+BlackBug Engineering
+07.05.2017
+https://github.com/dbprof/drive-on-line
+***************************************************************/
+
 // Подключаем библиотеки таймера
 #include <Event.h>
 #include <Timer.h>
@@ -28,6 +35,7 @@
 // Пины подключения экрана
 const int TM1637_CLK_PIN = 12;
 const int TM1637_DIO_PIN = 13;
+int iDispValue;
 
 // Создаем объект экрана
 TM1637 Disp4d(TM1637_CLK_PIN,TM1637_DIO_PIN);
@@ -106,7 +114,7 @@ void setup() {
   //Serial.begin(9600);
 
   t.every(1, readBTSignal);
-  t.every(10, doMoving);
+  t.every(2, doMoving);
 
   // Инициализация управления Bluetooth-Android
   RemoteXY_Init(); 
@@ -121,10 +129,10 @@ void setup() {
   isLast1Back = false;
 
   // Объявляем и устанавливаем переменные задержек при движении
-  iFDelay = 150;
-  iRDelay = 100;
-  iLDelay = 100;
-  iUDelay = 50;
+  iFDelay = 50;  //150
+  iRDelay = 50;  //100
+  iLDelay = 50;  //100
+  iUDelay = 50;  //50
 
   //Устанавливаем яркость экрана и инициируем его
   Disp4d.set(5);
@@ -166,12 +174,12 @@ void moveB() {
 // Движение влево
 void moveL() {
   RightMotor->run(FORWARD);
-  LeftMotor->run(BACKWARD);
+  LeftMotor->run(RELEASE);
 }
 
 // Движение вправо
 void moveR() {
-  RightMotor->run(BACKWARD);
+  RightMotor->run(RELEASE);
   LeftMotor->run(FORWARD);
 }
 
@@ -223,7 +231,19 @@ void readBTSignal()
 
 void doMoving() 
 {
-  Disp4d.display(RemoteXY.button_left*100 + RemoteXY.switch_run*10 + RemoteXY.button_right);
+  // Индикатор 2-слева-левый-приоритет 2-справа-правый-приоритет 
+  iDispValue = 1111;
+  if (RemoteXY.button_left)
+  {
+    iDispValue += 1000;
+  }
+  if (RemoteXY.button_right)
+  {
+    iDispValue += 1;
+  }
+
+  //iDispValue = RemoteXY.button_left*100 + RemoteXY.switch_run*10 + RemoteXY.button_right
+  Disp4d.display(iDispValue);
   
     if (RemoteXY.switch_run)
     {
@@ -235,31 +255,49 @@ void doMoving()
       //  Определяем действия в соответствии с текущим положением датчиков
       if (iLLS == 1 && iCLS == 1 && iRLS == 1)
       {
-        // 111 - Если все датчики находятся вне линии - действуем на основе предидущего движения
-        setMaxSpeed();
-        if (isLast1Right)
+        // 111 - Если все датчики находятся вне линии - действуем на основе нажатых кнопок
+        // Если была нажата кнопка налево - поворачиваем влево
+        if (RemoteXY.button_left)
         {
-          // Если предидущее движение было направо - поворачиваем правее
-          moveR();
-          setLast1Right();
-        }
-        else if (isLast1Left)
-        {
-          // Если предидущее движение было налево - поворачиваем левее
+          setMaxSpeed();
           moveL();
           setLast1Left();
         }
-        else if (isLast1Forward)
+        // Если была нажата кнопка направо - поворачиваем вправо
+        else if (RemoteXY.button_right)
         {
-          // Если предидущее движение было прямо - поворачиваем правее
+          setMaxSpeed();
           moveR();
           setLast1Right();
         }
+        // Если кнопка не была нажата - действуем на основе предидущего движения
         else
         {
-          // Если предидущее движение было назад или не было определено - поворачиваем правее
-          moveR();
-          setLast1Right();
+          setMaxSpeed();
+          if (isLast1Right)
+          {
+            // Если предидущее движение было направо - поворачиваем правее
+            moveR();
+            setLast1Right();
+          }
+          else if (isLast1Left)
+          { 
+            // Если предидущее движение было налево - поворачиваем левее
+            moveL();
+            setLast1Left();
+          }
+          else if (isLast1Forward)
+          {
+            // Если предидущее движение было прямо - поворачиваем левее
+            moveL();
+            setLast1Left();
+          }
+          else
+          {
+            // Если предидущее движение было назад или не было определено - назад
+            moveB();
+            setLast1Right();
+          }
         }
         delay(iUDelay);
       }
@@ -273,10 +311,10 @@ void doMoving()
       }
       else if (iLLS == 0 && iCLS == 1 && iRLS == 1)
       {
-        // 011 - Если только левый датчик находится на линии - продолжаем движение прямо левее
-        setMaxRSpeed();
+        // 011 - Если только левый датчик находится на линии - двигаемся влево
+        setMaxSpeed();
+        moveL();
         setLast1Left();
-        moveF();
         delay(iLDelay);
       }
       else if (iLLS == 0 && iCLS == 0 && iRLS == 1)
@@ -289,9 +327,9 @@ void doMoving()
       }
       else if (iLLS == 1 && iCLS == 1 && iRLS == 0)
       {
-        // 110 - Если только правый датчик находится на линии - продолжаем движение прямо правее
-        setMaxLSpeed(); 
-        moveF();
+        // 110 - Если только правый датчик находится на линии - двигаемся вправо
+        setMaxSpeed();
+        moveR();
         setLast1Right();
         delay(iRDelay);
       }
@@ -305,31 +343,49 @@ void doMoving()
       }
       else
       {
-        // 000 010 - Если правый и левый датчики находятся на линии - действуем на основе предидущего движения
-        setMaxSpeed();
-        if (isLast1Right)
+        // 000 010 - Если правый и левый датчики находятся на линии - действуем на основе нажатия кнопок
+        // Если была нажата кнопка налево - поворачиваем влево
+        if (RemoteXY.button_left)
         {
-          // Если предидущее движение было направо - поворачиваем правее
-          moveR();
-          setLast1Right();
-        }
-        else if (isLast1Left)
-        {
-          // Если предидущее движение было налево - поворачиваем левее
+          setMaxSpeed();
           moveL();
           setLast1Left();
         }
-        else if (isLast1Forward)
+        // Если была нажата кнопка направо - поворачиваем вправо
+        else if (RemoteXY.button_right)
         {
-          // Если предидущее движение было прямо - поворачиваем правее
+          setMaxSpeed();
           moveR();
           setLast1Right();
         }
+        // Если кнопка не была нажата - действуем на основе предидущего движения
         else
         {
-          // Если предидущее движение было назад или не было определено - назад
-          moveB();
-          setLast1Right();
+          setMaxSpeed();
+          if (isLast1Right)
+          {
+            // Если предидущее движение было направо - поворачиваем правее
+            moveR();
+            setLast1Right();
+          }
+          else if (isLast1Left)
+          { 
+            // Если предидущее движение было налево - поворачиваем левее
+            moveL();
+            setLast1Left();
+          }
+          else if (isLast1Forward)
+          {
+            // Если предидущее движение было прямо - поворачиваем левее
+            moveL();
+            setLast1Left();
+          }
+          else
+          {
+            // Если предидущее движение было назад или не было определено - назад
+            moveB();
+            setLast1Right();
+          }
         }
         delay(iUDelay);  
       }
