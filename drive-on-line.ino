@@ -1,3 +1,10 @@
+/**************************************************************
+drive-on-line.ino
+BlackBug Engineering
+01.05.2017
+https://github.com/dbprof/drive-on-line
+***************************************************************/
+
 // Подключаем библиотеки таймера
 #include <Event.h>
 #include <Timer.h>
